@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      session_histories: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -135,6 +136,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
+        state = remember_session(state, running_entry)
         state = record_session_completion_totals(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
@@ -979,6 +981,8 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            prompt_count: 0,
+            session_events: [],
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -1427,6 +1431,8 @@ defmodule SymphonyElixir.Orchestrator do
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
+          prompt_count: Map.get(metadata, :prompt_count, Map.get(metadata, :turn_count, 0)),
+          session_events: Map.get(metadata, :session_events, []),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
@@ -1476,6 +1482,7 @@ defmodule SymphonyElixir.Orchestrator do
        blocked: blocked,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       session_histories: Map.get(state, :session_histories, %{}),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1515,6 +1522,7 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_output = Map.get(running_entry, :codex_last_reported_output_tokens, 0)
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
+    prompt_count = turn_count_for_update(turn_count, running_entry.session_id, update)
 
     {
       Map.merge(running_entry, %{
@@ -1529,7 +1537,9 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: prompt_count,
+        prompt_count: prompt_count,
+        session_events: append_session_event(Map.get(running_entry, :session_events, []), update)
       }),
       token_delta
     }
@@ -1554,10 +1564,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp session_id_for_update(existing, _update), do: existing
 
   defp turn_count_for_update(existing_count, existing_session_id, %{
-         event: :session_started,
+         event: event,
          session_id: session_id
        })
-       when is_integer(existing_count) and is_binary(session_id) do
+       when event in [:session_started, :prompt_started] and is_integer(existing_count) and
+              is_binary(session_id) do
     if session_id == existing_session_id do
       existing_count
     else
@@ -1577,6 +1588,58 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  defp remember_session(state, entry) when is_map(entry) do
+    identifier = Map.get(entry, :identifier)
+    events = Map.get(entry, :session_events, [])
+
+    if is_binary(identifier) and events != [] do
+      histories = Map.get(state, :session_histories, %{})
+
+      histories =
+        histories
+        |> Map.put(identifier, %{
+          identifier: identifier,
+          session_id: Map.get(entry, :session_id),
+          events: events
+        })
+        |> Enum.take(20)
+        |> Map.new()
+
+      %{state | session_histories: histories}
+    else
+      state
+    end
+  end
+
+  defp remember_session(state, _entry), do: state
+
+  defp append_session_event(events, update) do
+    event = %{
+      at: update[:timestamp],
+      kind: update[:kind] || kind_for_event(update[:event]),
+      text: update[:text] || summarize_event_text(update),
+      raw: update[:raw] || update[:payload]
+    }
+
+    events
+    |> List.wrap()
+    |> Kernel.++([event])
+    |> Enum.take(-200)
+  end
+
+  defp kind_for_event(:prompt_started), do: "status"
+  defp kind_for_event(:prompt_completed), do: "status"
+  defp kind_for_event(:prompt_failed), do: "status"
+  defp kind_for_event(:permission), do: "tool"
+  defp kind_for_event(_event), do: "status"
+
+  defp summarize_event_text(update) do
+    case update[:text] || update[:message] do
+      text when is_binary(text) -> text
+      _ -> to_string(update[:event] || "update")
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

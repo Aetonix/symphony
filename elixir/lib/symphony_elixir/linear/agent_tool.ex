@@ -140,7 +140,7 @@ defmodule SymphonyElixir.Linear.AgentTool do
   end
 
   defp encode_payload(payload) when is_map(payload) or is_list(payload) do
-    Jason.encode!(payload, pretty: true)
+    SymphonyElixir.JSON.encode!(payload, pretty: true)
   end
 
   defp encode_payload(payload), do: inspect(payload)

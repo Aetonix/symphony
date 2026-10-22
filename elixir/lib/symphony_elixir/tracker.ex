@@ -125,7 +125,7 @@ defmodule SymphonyElixir.Tracker do
 
   defp unsupported_agent_tool_response(tool) do
     output =
-      Jason.encode!(%{
+      SymphonyElixir.JSON.encode!(%{
         "error" => %{
           "message" => "Unsupported dynamic tool: #{inspect(tool)}.",
           "supportedTools" => []

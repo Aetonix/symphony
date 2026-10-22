@@ -33,6 +33,41 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
+    assert Config.settings!().agent.max_prompts == 5
+
+    path = Workflow.workflow_file_path()
+
+    File.write!(path, """
+    ---
+    tracker:
+      kind: memory
+    workspace:
+      base_branch: "   "
+    ---
+    hello
+    """)
+
+    WorkflowStore.force_reload()
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "base_branch"
+
+    File.write!(path, """
+    ---
+    tracker:
+      kind: memory
+    workspace:
+      base_branch: dev
+    agent:
+      max_prompts: 4
+    ---
+    hello
+    """)
+
+    WorkflowStore.force_reload()
+    settings = Config.settings!()
+    assert settings.workspace.base_branch == "dev"
+    assert settings.agent.max_prompts == 4
+    assert settings.agent.max_turns == 4
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -122,7 +157,7 @@ defmodule SymphonyElixir.CoreTest do
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 --branch"
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -1511,7 +1546,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true external blocker"
     assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
+    assert prompt =~ "open and follow `.agents/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Follow-up context:"
     assert prompt =~ "follow-up attempt #2"
@@ -1566,13 +1601,10 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{\"id\":1,\"result\":{}}'
             ;;
           2)
+            printf '%s\\n' '{\"id\":2,\"result\":{\"sessionId\":\"thread-1\"}}'
             ;;
           3)
-            printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-1\"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
-            printf '%s\\n' '{\"method\":\"turn/completed\"}'
+            printf '%s\\n' '{\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'
             exit 0
             ;;
           *)
@@ -1651,13 +1683,11 @@ defmodule SymphonyElixir.CoreTest do
               printf '%s\\n' '{\"id\":1,\"result\":{}}'
               ;;
             2)
-              printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-live\"}}}'
+              printf '%s\\n' '{\"id\":2,\"result\":{\"sessionId\":\"thread-live\"}}'
               ;;
             3)
-              printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-live\"}}}'
-              ;;
-            4)
-              printf '%s\\n' '{\"method\":\"turn/completed\"}'
+              printf '%s\\n' '{\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'
+              exit 0
               ;;
             *)
               ;;
@@ -1695,13 +1725,13 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
-                        event: :session_started,
+                        event: :prompt_started,
                         timestamp: %DateTime{},
                         session_id: session_id
                       }},
                      500
 
-      assert session_id == "thread-live-turn-live"
+      assert session_id == "thread-live-1"
     after
       File.rm_rf(test_root)
     end
@@ -1813,17 +1843,13 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
+            printf '%s\\n' '{"id":2,"result":{"sessionId":"thread-cont"}}'
             ;;
           3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
+            printf '%s\\n' '{"id":3,"result":{"stopReason":"end_turn"}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
+            printf '%s\\n' '{"id":4,"result":{"stopReason":"end_turn"}}'
             ;;
         esac
       done
@@ -1885,24 +1911,24 @@ defmodule SymphonyElixir.CoreTest do
       lines = File.read!(trace_file) |> String.split("\n", trim: true)
 
       assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN:"))) == 1
-      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 1
+      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"session/new\""))) == 1
 
-      turn_texts =
+      prompt_texts =
         lines
         |> Enum.filter(&String.starts_with?(&1, "JSON:"))
         |> Enum.map(&String.trim_leading(&1, "JSON:"))
         |> Enum.map(&Jason.decode!/1)
-        |> Enum.filter(&(&1["method"] == "turn/start"))
+        |> Enum.filter(&(&1["method"] == "session/prompt"))
         |> Enum.map(fn payload ->
-          get_in(payload, ["params", "input"])
+          get_in(payload, ["params", "prompt"])
           |> Enum.map_join("\n", &Map.get(&1, "text", ""))
         end)
 
-      assert length(turn_texts) == 2
-      assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
-      refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
-      assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
-      assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
+      assert length(prompt_texts) == 2
+      assert Enum.at(prompt_texts, 0) =~ "You are an agent for this repository."
+      refute Enum.at(prompt_texts, 1) =~ "You are an agent for this repository."
+      assert Enum.at(prompt_texts, 1) =~ "Continuation guidance:"
+      assert Enum.at(prompt_texts, 1) =~ "continuation prompt #2 of 3"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
@@ -1944,17 +1970,13 @@ defmodule SymphonyElixir.CoreTest do
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
           2)
+            printf '%s\\n' '{"id":2,"result":{"sessionId":"thread-max"}}'
             ;;
           3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-max"}}}'
+            printf '%s\\n' '{"id":3,"result":{"stopReason":"end_turn"}}'
             ;;
           4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
+            printf '%s\\n' '{"id":4,"result":{"stopReason":"end_turn"}}'
             ;;
         esac
       done
@@ -2000,7 +2022,7 @@ defmodule SymphonyElixir.CoreTest do
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1
-      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
+      assert length(Regex.scan(~r/"method":"session\/prompt"/, trace)) == 2
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)

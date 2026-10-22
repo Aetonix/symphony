@@ -105,7 +105,7 @@ Important boundary:
 6. `Agent Runner`
    - Creates workspace.
    - Builds prompt from issue + workflow template.
-   - Launches the coding agent app-server client.
+   - Launches the ACP client for the agent named by the workflow.
    - Streams agent updates back to the orchestrator.
 
 7. `Status Surface` (OPTIONAL)
@@ -145,7 +145,7 @@ Symphony is easiest to port when kept in these layers:
 - One configured issue tracker API.
 - Local filesystem for workspaces and logs.
 - OPTIONAL workspace population tooling (for example Git CLI, if used).
-- Coding-agent executable that supports the targeted Codex app-server mode.
+- An ACP agent executable. This reference implementation registers Cursor (`agent acp`).
 - Host environment authentication for the issue tracker and coding agent. Host-side tracker secret
   environment variables SHOULD NOT be inherited by the coding-agent child process.
 
@@ -362,6 +362,8 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `agents`
+- `routing`
 
 Unknown keys SHOULD be ignored for forward compatibility.
 
@@ -416,6 +418,10 @@ Fields:
   - `~` is expanded.
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
+- `base_branch` (string)
+  - Default: `main`
+  - The branch the workspace and the workflow prompt treat as the integration branch.
+  - The working branch is named from the ticket and created from this base.
 
 #### 5.3.4 `hooks` (object)
 
@@ -448,9 +454,10 @@ Fields:
 - `max_concurrent_agents` (integer)
   - Default: `10`
   - Changes SHOULD be re-applied at runtime and affect subsequent dispatch decisions.
-- `max_turns` (positive integer)
+- `max_prompts` (positive integer)
   - Default: `20`
-  - Limits the number of coding-agent turns within one worker session.
+  - Limits the number of prompts within one worker session.
+  - `max_turns` is accepted as an alias and stored as the same cap.
   - Invalid values fail configuration validation.
 - `max_retry_backoff_ms` (integer)
   - Default: `300000` (5 minutes)
@@ -462,10 +469,13 @@ Fields:
 
 #### 5.3.6 `codex` (object)
 
-Fields:
+The `codex` block is not a runtime. It remains in the schema so older workflow files still parse.
+It becomes a runtime again when a Codex ACP implementer is registered. Until then, `agents` and
+`routing` select the process Symphony launches.
 
-For Codex-owned config values such as `approval_policy`, `thread_sandbox`, and
-`turn_sandbox_policy`, supported values are defined by the targeted Codex app-server version.
+Fields below are the historical Codex app-server settings. For values such as `approval_policy`,
+`thread_sandbox`, and `turn_sandbox_policy`, supported values are defined by the targeted Codex
+app-server version.
 Implementors SHOULD treat them as pass-through Codex config values rather than relying on a
 hand-maintained enum in this spec. To inspect the installed Codex schema, run
 `codex app-server generate-json-schema --out <dir>` and inspect the relevant definitions referenced
@@ -474,8 +484,7 @@ fields locally if they want stricter startup checks.
 
 - `command` (string shell command)
   - Default: `codex app-server`
-  - The runtime launches this command via `bash -lc` in the workspace directory.
-  - The launched process MUST speak a compatible app-server protocol over stdio.
+  - Kept so older files parse. This build does not launch it.
 - `approval_policy` (Codex `AskForApproval` value)
   - Default: implementation-defined.
 - `thread_sandbox` (Codex `SandboxMode` value)
@@ -489,6 +498,22 @@ fields locally if they want stricter startup checks.
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+
+#### 5.3.7 `agents` and `routing`
+
+`agents` is a map of agent name to implementer settings. `routing.default_agent` is the name used
+when no label matches. `routing.by_label` maps a ticket label to an agent name.
+
+Each name must have a registered implementer. A workflow that names an agent with no implementer
+fails validation. This reference implementation registers `cursor`, whose command defaults to
+`agent acp`.
+
+- `agents.<name>.command` (string shell command)
+  - The ACP agent process. Launched with `bash -lc` in the workspace.
+- `routing.default_agent` (string)
+  - Default: `cursor`
+- `routing.by_label` (map of label to agent name)
+  - Default: empty map.
 
 ### 5.4 Prompt Template Contract
 
@@ -600,7 +625,7 @@ Validation checks:
 - `tracker.kind` is present and supported.
 - The selected adapter accepts `tracker.provider` after documented defaults and `$VAR`
   resolution.
-- `codex.command` is present and non-empty.
+- The routed agent name has a registered implementer.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
 
@@ -621,10 +646,14 @@ not require recognizing or validating extension fields unless that extension is 
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
 - `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
+- `agent.max_prompts`: integer, default `20` (`agent.max_turns` is the same cap)
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
 - `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
-- `codex.command`: shell command string, default `codex app-server`
+- `workspace.base_branch`: string, default `main`
+- `agents.<name>.command`: shell command for that ACP implementer
+- `routing.default_agent`: string, default `cursor`
+- `routing.by_label`: map of label to agent name, default `{}`
+- `codex.command`: historical shell command, default `codex app-server`, not launched by this build
 - `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
 - `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
 - `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
@@ -949,96 +978,86 @@ Invariant 3: Workspace key is sanitized.
 
 ## 10. Agent Runner Protocol (Coding Agent Integration)
 
-This section defines Symphony's language-neutral responsibilities when integrating a Codex
-app-server. The Codex app-server protocol for the targeted Codex version is the source of truth for
-protocol schemas, message payloads, transport framing, and method names.
+Symphony is an ACP client. The Agent Client Protocol is the source of truth for `initialize`,
+`session/new`, `session/prompt`, `session/update`, and `session/request_permission`.
+
+`WORKFLOW.md` names the agent. A registry resolves that name to an implementer: the command to
+launch, how that agent authenticates, and any ACP quirks. This reference implementation registers
+Cursor (`agent acp`). A name with no implementer fails validation. Claude, Codex, and other ACP
+agents are later registrations of the same client.
+
+The historical Codex app-server client is not a second runtime. Its protocol notes, including
+`thread/start` and `turn/start`, are retired with that client. `elixir/docs/token_accounting.md`
+records them and does not rename them into ACP methods.
 
 Protocol source of truth:
 
-- Implementations MUST send messages that are valid for the targeted Codex app-server version.
-- Implementations MUST consult the targeted Codex app-server documentation or generated schema
-  instead of treating this specification as a protocol schema.
-- If this specification appears to conflict with the targeted Codex app-server protocol, the Codex
-  protocol controls protocol shape and transport behavior.
+- Implementations MUST send ACP messages that the targeted agent accepts.
 - Symphony-specific requirements in this section still control orchestration behavior, workspace
   selection, prompt construction, continuation handling, and observability extraction.
+- Tracker tools run in Symphony. The agent receives tool results. It does not receive the tracker
+  credential.
 
 ### 10.1 Launch Contract
 
 Subprocess launch parameters:
 
-- Command: `codex.command`
-- Invocation: `bash -lc <codex.command>`
+- Command: `agents.<resolved name>.command`, or the implementer's default
+- Invocation: `bash -lc` in the workspace directory
 - Working directory: workspace path
-- Transport/framing: the protocol transport required by the targeted Codex app-server version
+- Transport: ACP JSON-RPC over stdio, one JSON object per line
 
 Notes:
 
-- The default command is `codex app-server`.
-- Approval policy, sandbox policy, cwd, prompt input, and OPTIONAL tool declarations are supplied
-  using fields supported by the targeted Codex app-server version.
+- The Cursor implementer's default command is `agent acp`.
+- The client sends `initialize`, then `session/new` with `cwd` and `mcpServers`, then one
+  `session/prompt` at a time.
+- `session/request_permission` is answered by selecting the first advertised option.
+- Tracker credentials are removed from the child environment.
 
 RECOMMENDED additional process settings:
 
-- Max line size: 10 MB (for safe buffering)
+- Max line size: 1 MB for the line-oriented port buffer used by this implementation, or larger when
+  the agent emits bigger lines.
 
 ### 10.2 Session Startup Responsibilities
 
-Reference: https://developers.openai.com/codex/app-server/
+Startup:
 
-Startup MUST follow the targeted Codex app-server contract. Symphony additionally requires the
-client to:
-
-- Start the app-server subprocess in the per-issue workspace.
-- Initialize the app-server session using the targeted Codex app-server protocol.
-- Create or resume a coding-agent thread according to the targeted protocol.
-- Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
-  targeted protocol accepts cwd.
-- Start the first turn with the rendered issue prompt.
-- Start later in-worker continuation turns on the same live thread with continuation guidance rather
-  than resending the original issue prompt.
-- Supply the implementation's documented approval and sandbox policy using fields supported by the
-  targeted protocol.
-- Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
-  protocol supports turn or session titles.
-- Advertise implemented client-side tools using the targeted protocol.
+- Start the ACP agent in the per-issue workspace.
+- Send `initialize`.
+- Authenticate only when the agent advertises the implementer's auth method. Cursor's method id is
+  `cursor_login`. The tracker API key is not an auth method and is not placed in the agent
+  environment.
+- Send `session/new` with the workspace cwd and any tool servers.
+- Send the first `session/prompt` with the rendered issue prompt.
+- Send later continuation prompts on the same session. Do not resend the original issue prompt.
 
 Session identifiers:
 
-- Extract `thread_id` from the thread identity returned by the targeted Codex app-server protocol.
-- Extract `turn_id` from each turn identity returned by the targeted Codex app-server protocol.
-- Emit `session_id = "<thread_id>-<turn_id>"`
-- Reuse the same `thread_id` for all continuation turns inside one worker run
+- `session_id` for a prompt is `<acp_session_id>-<prompt_number>`.
+- Reuse the ACP `sessionId` for every continuation prompt inside one worker run.
 
-### 10.3 Streaming Turn Processing
+### 10.3 Prompt processing
 
-The client processes app-server updates according to the targeted Codex app-server protocol until
-the active turn terminates.
+The client reads `session/update` notifications until `session/prompt` returns.
 
 Completion conditions:
 
-- Targeted-protocol turn completion signal -> success
-- Targeted-protocol turn failure signal -> failure
-- Targeted-protocol turn cancellation signal -> failure
-- turn stream silence timeout (`turn_timeout_ms`) -> failure
+- `stopReason` other than `cancelled` or `error` -> success
+- `stopReason` `cancelled` or `error` -> failure
+- prompt timeout -> failure
 - subprocess exit -> failure
 
 Continuation processing:
 
-- If the worker decides to continue after a successful turn, it SHOULD start another turn on the same
-  live thread using the targeted protocol.
-- The app-server subprocess SHOULD remain alive across those continuation turns and be stopped only
-  when the worker run is ending.
-
-Transport handling requirements:
-
-- Follow the transport and framing rules of the targeted Codex app-server version.
-- For stdio-based transports, keep protocol stream handling separate from diagnostic stderr
-  handling unless the targeted protocol specifies otherwise.
+- If the worker decides to continue after a successful prompt, it sends another `session/prompt`
+  on the same session.
+- The agent process stays alive across those prompts and is stopped when the worker run ends.
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
-The app-server client emits structured events to the orchestrator callback. Each event SHOULD
+The ACP client emits structured events to the orchestrator callback. Each event SHOULD
 include:
 
 - `event` (enum/string)
@@ -1049,9 +1068,12 @@ include:
 
 Important emitted events include, for example:
 
-- `session_started`
+- `prompt_started`
+- `prompt_completed`
+- `prompt_failed`
+- `session_update`
+- `permission`
 - `startup_failed`
-- `turn_completed`
 - `turn_failed`
 - `turn_cancelled`
 - `turn_ended_with_error`
@@ -1090,9 +1112,9 @@ Unsupported dynamic tool calls:
 
 Optional provider-native agent tool extension:
 
-- An adapter MAY expose provider-native tools to the app-server session.
-- The selected adapter's tool specs SHOULD be advertised during session startup using the protocol
-  mechanism supported by the targeted Codex app-server version.
+- An adapter MAY expose provider-native tools to the ACP session.
+- The selected adapter's tool specs SHOULD be advertised during `session/new` through the tool
+  server Symphony hosts. The tracker credential stays in Symphony.
 - Tool specs, adapter selection, and effective tracker settings MUST be bound to one session
   snapshot. A workflow reload applies to future sessions; it MUST NOT make an in-flight session
   advertise one provider and execute another.
@@ -1128,7 +1150,7 @@ execute_agent_tool(name, arguments, context={issue}) -> ToolResult
 ```
 
 `ToolResult` MUST distinguish success from failure and carry JSON-safe structured output that can
-be translated to the targeted app-server protocol. The context contains the normalized issue, never
+be translated to the ACP tool result. The context contains the normalized issue, never
 the credential.
 
 User-input-required policy:
@@ -1162,14 +1184,14 @@ Error mapping (RECOMMENDED normalized categories):
 
 ### 10.7 Agent Runner Contract
 
-The `Agent Runner` wraps workspace + prompt + app-server client.
+The `Agent Runner` wraps workspace + prompt + ACP client.
 
 Behavior:
 
 1. Create/reuse workspace for issue.
 2. Build prompt from workflow template.
-3. Start app-server session.
-4. Forward app-server events to orchestrator.
+3. Start the ACP session for the routed agent.
+4. Forward session events to the orchestrator.
 5. On any error, fail the worker attempt (the orchestrator will retry).
 
 Note:

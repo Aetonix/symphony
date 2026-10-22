@@ -119,7 +119,9 @@ defmodule SymphonyElixir.Config do
     if is_nil(settings.tracker.kind) do
       {:error, :missing_tracker_kind}
     else
-      Tracker.validate_config(settings.tracker)
+      with :ok <- Tracker.validate_config(settings.tracker) do
+        SymphonyElixir.Agent.Registry.validate_settings(settings)
+      end
     end
   end
 
@@ -136,6 +138,9 @@ defmodule SymphonyElixir.Config do
 
       :workflow_front_matter_not_a_map ->
         "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"
+
+      {:unknown_agent, name} ->
+        "Invalid WORKFLOW.md config: agent #{name} has no implementer. This build registers cursor."
 
       other ->
         "Invalid WORKFLOW.md config: #{inspect(other)}"

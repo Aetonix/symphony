@@ -747,7 +747,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp dynamic_tool_output(%{"contentItems" => [%{"text" => text} | _]}) when is_binary(text), do: text
-  defp dynamic_tool_output(result), do: Jason.encode!(result, pretty: true)
+  defp dynamic_tool_output(result), do: SymphonyElixir.JSON.encode!(result, pretty: true)
 
   defp dynamic_tool_content_items(output) when is_binary(output) do
     [
@@ -1028,7 +1028,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp tool_call_arguments(_params), do: %{}
 
   defp send_message(port, message) do
-    line = Jason.encode!(message) <> "\n"
+    line = SymphonyElixir.JSON.encode!(message) <> "\n"
     Port.command(port, line)
   end
 

@@ -149,8 +149,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>State</th>
                     <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Runtime / prompts</th>
+                    <th>Latest update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -159,6 +159,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                        <a class="issue-link" href={"/sessions/#{entry.issue_identifier}"}>Session</a>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
                     </td>
@@ -184,7 +185,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                    <td class="numeric"><%= format_runtime_and_prompts(entry.started_at, entry.prompt_count, @now) %></td>
                     <td>
                       <div class="detail-stack">
                         <span
@@ -388,11 +389,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
+  defp format_runtime_and_prompts(started_at, prompt_count, now) when is_integer(prompt_count) and prompt_count > 0 do
+    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{prompt_count}"
   end
 
-  defp format_runtime_and_turns(started_at, _turn_count, now),
+  defp format_runtime_and_prompts(started_at, _prompt_count, now),
     do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
 
   defp format_runtime_seconds(seconds) when is_number(seconds) do

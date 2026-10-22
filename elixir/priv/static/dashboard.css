@@ -469,3 +469,30 @@ pre,
     padding: 1rem;
   }
 }
+
+.session-event {
+  border-top: 1px solid var(--line);
+  padding: 0.85rem 0;
+}
+
+.session-kind {
+  margin: 0 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.session-raw {
+  margin: 0.5rem 0 0;
+  overflow: auto;
+  background: var(--card-muted);
+  padding: 0.75rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+}

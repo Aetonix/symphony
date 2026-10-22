@@ -1,4 +1,9 @@
-# Codex Token Accounting
+# Codex app-server token accounting (retired)
+
+This note documents the Codex app-server protocol that the reference implementation no longer
+speaks. Symphony now runs an ACP session (`session/new`, `session/prompt`). The method names below
+(`thread/tokenUsage/updated`, `turn/completed`) belong to that retired client. They are not ACP
+methods, and this build does not rename them.
 
 This document explains how Codex reports token usage through the app-server protocol and how Symphony should account for it.
 

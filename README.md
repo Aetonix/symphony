@@ -28,8 +28,10 @@ Tell your favorite coding agent to build Symphony in a programming language of y
 ### Option 2. Use our experimental reference implementation
 
 Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
+and run the Elixir-based Symphony implementation. `WORKFLOW.md` names the agent. This build
+registers the Cursor implementer and speaks the Agent Client Protocol (`session/new`,
+`session/prompt`). The `codex:` block returns when a Codex implementer is registered. You can also
+ask your favorite coding agent to help with the setup:
 
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md

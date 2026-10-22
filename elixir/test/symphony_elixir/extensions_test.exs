@@ -273,6 +273,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,
+                 "prompt_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
@@ -334,6 +335,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "workspace_path" => nil,
                "session_id" => "thread-http",
                "turn_count" => 7,
+               "prompt_count" => 7,
+               "session_events" => [],
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
@@ -513,7 +516,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Latest update"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -713,6 +716,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     HttpServer.bound_port()
+  end
+
+  test "session page shows the empty state and toggles raw events" do
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/sessions/MT-NONE")
+    assert html =~ "MT-NONE"
+    assert html =~ "No session is available"
+    assert html =~ "Waiting for the first prompt."
+
+    html = view |> element("button", "Show raw events") |> render_click()
+    assert html =~ "Hide raw events"
   end
 
   defp assert_eventually(fun, attempts \\ 20)

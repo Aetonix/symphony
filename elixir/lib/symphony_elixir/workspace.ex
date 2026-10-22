@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
+  alias SymphonyElixir.Agent.Branch
   alias SymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
@@ -401,7 +402,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true, env: hook_env(issue_context))
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -422,7 +423,7 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    case run_remote_command(worker_host, remote_hook_script(workspace, command, issue_context), timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -568,25 +569,56 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      branch_name: Branch.name(issue),
+      base_branch: hook_base_branch()
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      branch_name: nil,
+      base_branch: hook_base_branch()
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      branch_name: nil,
+      base_branch: hook_base_branch()
     }
+  end
+
+  defp hook_base_branch do
+    Branch.base(Config.settings!())
+  rescue
+    _error -> "main"
+  end
+
+  defp hook_env(issue_context) do
+    [
+      {"SYMPHONY_ISSUE_ID", to_string(issue_context[:issue_id] || "")},
+      {"SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier] || ""},
+      {"SYMPHONY_BRANCH_NAME", issue_context[:branch_name] || ""},
+      {"SYMPHONY_BASE_BRANCH", issue_context[:base_branch] || ""}
+    ]
+  end
+
+  defp remote_hook_script(workspace, command, issue_context) do
+    exports =
+      Enum.map_join(hook_env(issue_context), "\n", fn {name, value} ->
+        "export #{name}=#{shell_escape(value)}"
+      end)
+
+    ["cd #{shell_escape(workspace)}", exports, command]
+    |> Enum.join("\n")
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

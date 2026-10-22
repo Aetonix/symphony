@@ -16,21 +16,24 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 1. Polls the configured tracker for candidate work (included adapters: Linear, GitHub Issues, Jira
    Cloud, Asana, and GitLab)
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+3. Launches the agent named by `WORKFLOW.md` inside the workspace. This build registers Cursor
+   (`agent acp`) and speaks the [Agent Client Protocol](https://agentclientprotocol.com/).
+4. Sends one prompt at a time on that session
+5. Keeps the session working on the issue until the work is done
 
-During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
-Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
-`jira_rest`, Asana serves `asana_api`, and GitLab serves `gitlab_api`. Symphony executes those
-tools with configured host-side auth and removes declared tracker-token environment variables from
-the Codex child, so the agent does not need a second tracker login.
+Symphony runs the selected tracker adapter's tools and returns the results. The Linear tool is
+`linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves `jira_rest`, Asana serves
+`asana_api`, and GitLab serves `gitlab_api`. Symphony executes those tools with configured
+host-side auth and removes declared tracker-token environment variables from the agent process,
+so the agent can request any operation the key allows and cannot read the key.
+
+The `codex:` workflow block is not a runtime in this build. It returns when a Codex ACP implementer
+is registered. `elixir/docs/token_accounting.md` documents that retired app-server protocol.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 
-If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
+If the agent reports that operator input or approval is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
 tracker issue can become a dispatch candidate again after restart.
@@ -42,8 +45,8 @@ tracker issue can become a dispatch candidate again after restart.
 2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
+4. Optionally copy `.agents/skills` (`commit`, `push`, `pull`, `land`, and `linear`) into your repo.
+   - The `linear` skill uses Symphony's `linear_graphql` tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
@@ -308,7 +311,8 @@ The observability UI now runs on a minimal Phoenix stack:
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
 - `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.codex/`: repository-local Codex skills and setup helpers
+- `../.agents/skills/`: repository-local agent skills
+- `../scripts/worktree_init.sh`: fresh-worktree setup (`mise trust` and `make setup`)
 
 ## Testing
 

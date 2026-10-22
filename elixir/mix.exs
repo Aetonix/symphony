@@ -27,6 +27,12 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.CLI,
           SymphonyElixir.Codex.AppServer,
           SymphonyElixir.Codex.DynamicTool,
+          SymphonyElixir.JSON,
+          SymphonyElixir.Agent.AcpClient,
+          SymphonyElixir.Agent.Branch,
+          SymphonyElixir.Agent.Registry,
+          SymphonyElixir.Agent.Implementers.Cursor,
+          SymphonyElixir.Agent.ToolBroker,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
@@ -41,7 +47,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixirWeb.StaticAssetController,
           SymphonyElixirWeb.StaticAssets,
           SymphonyElixirWeb.Router,
-          SymphonyElixirWeb.Router.Helpers
+          SymphonyElixirWeb.Router.Helpers,
+          SymphonyElixirWeb.SessionLive
         ]
       ],
       test_ignore_filters: [

@@ -1,10 +1,10 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single tracker work item in its workspace with Codex.
+  Executes a single tracker work item in its workspace through an ACP session.
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Agent.AcpClient
   alias SymphonyElixir.{Config, PromptBuilder, Tracker, Workspace}
   alias SymphonyElixir.Tracker.Issue
 
@@ -44,7 +44,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_prompts(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -85,49 +85,50 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
-    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+  defp run_prompts(workspace, issue, codex_update_recipient, opts, worker_host) do
+    max_prompts =
+      Keyword.get(opts, :max_prompts) ||
+        Keyword.get(opts, :max_turns) ||
+        Config.settings!().agent.max_prompts
+
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issues_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    with {:ok, session} <- AcpClient.start_session(workspace, worker_host: worker_host, issue: issue) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_prompts(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_prompts)
       after
-        AppServer.stop_session(session)
+        AcpClient.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_prompts(session, workspace, issue, recipient, opts, issue_state_fetcher, prompt_number, max_prompts) do
+    prompt = build_prompt(issue, opts, prompt_number, max_prompts)
 
-    with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
-             issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+    with {:ok, prompt_session} <-
+           AcpClient.run_prompt(session, prompt, issue,
+             on_message: codex_message_handler(recipient, issue),
+             prompt_number: prompt_number
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent prompt for #{issue_context(issue)} session_id=#{prompt_session[:session_id]} workspace=#{workspace} prompt=#{prompt_number}/#{max_prompts}")
 
       case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+        {:continue, refreshed_issue} when prompt_number < max_prompts ->
+          Logger.info("Continuing agent session for #{issue_context(refreshed_issue)} prompt=#{prompt_number}/#{max_prompts}")
 
-          do_run_codex_turns(
-            app_session,
+          do_run_prompts(
+            session,
             workspace,
             refreshed_issue,
-            codex_update_recipient,
+            recipient,
             opts,
             issue_state_fetcher,
-            turn_number + 1,
-            max_turns
+            prompt_number + 1,
+            max_prompts
           )
 
         {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
+          Logger.info("Reached the prompt cap for #{issue_context(refreshed_issue)}; returning control to the orchestrator")
           :ok
 
         {:done, _refreshed_issue} ->
@@ -139,17 +140,17 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_prompt(issue, opts, 1, _max_prompts), do: PromptBuilder.build_prompt(issue, opts)
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_prompt(_issue, _opts, prompt_number, max_prompts) do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the tracker work item is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
+    - The previous prompt completed normally, but the tracker work item is still in an active state.
+    - This is continuation prompt ##{prompt_number} of #{max_prompts} for the current session.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
-    - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-    - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    - The original task instructions and prior prompt context are already present in this session, so do not restate them before acting.
+    - Focus on the remaining ticket work and do not end the prompt while the issue stays active unless you are truly blocked.
     """
   end
 

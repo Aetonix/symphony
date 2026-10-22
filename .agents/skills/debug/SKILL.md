@@ -11,14 +11,14 @@ description:
 ## Goals
 
 - Find why a run is stuck, retrying, or failing.
-- Correlate Linear issue identity to a Codex session quickly.
+- Correlate a tracker issue to an ACP session quickly.
 - Read the right logs in the right order to isolate root cause.
 
 ## Log Sources
 
 - Primary runtime log: `log/symphony.log`
   - Default comes from `SymphonyElixir.LogFile` (`log/symphony.log`).
-  - Includes orchestrator, agent runner, and Codex app-server lifecycle logs.
+  - Includes orchestrator, agent runner, and ACP session lifecycle logs.
 - Rotated runtime logs: `log/symphony.log*`
   - Check these when the relevant run is older.
 
@@ -26,7 +26,7 @@ description:
 
 - `issue_identifier`: human ticket key (example: `MT-625`)
 - `issue_id`: Linear UUID (stable internal ID)
-- `session_id`: Codex thread-turn pair (`<thread_id>-<turn_id>`)
+- `session_id`: ACP session and prompt (`<acp_session_id>-<prompt_number>`)
 
 `elixir/docs/logging.md` requires these fields for issue/session lifecycle logs. Use
 them as your join keys during debugging.
@@ -38,7 +38,7 @@ them as your join keys during debugging.
 3. Extract `session_id` from matching lines.
 4. Trace that `session_id` across start, stream, completion/failure, and stall
    handling logs.
-5. Decide class of failure: timeout/stall, app-server startup failure, turn
+5. Decide class of failure: timeout/stall, agent startup failure, prompt
    failure, or orchestrator retry loop.
 
 ## Commands
@@ -54,7 +54,7 @@ rg -n "issue_id=<linear-uuid>" log/symphony.log*
 rg -o "session_id=[^ ;]+" log/symphony.log* | sort -u
 
 # 4) Trace one session end-to-end
-rg -n "session_id=<thread>-<turn>" log/symphony.log*
+rg -n "session_id=<session>-<prompt>" log/symphony.log*
 
 # 5) Focus on stuck/retry signals
 rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session failed|Codex session ended with error" log/symphony.log*
@@ -72,8 +72,7 @@ rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session fai
 3. Classify the problem:
     - Stall loop: `Issue stalled ... restarting with backoff`.
     - App-server startup: `Codex session failed ...`.
-    - Turn execution failure: `turn_failed`, `turn_cancelled`, `turn_timeout`, or
-      `ended with error`.
+    - Prompt failure: `prompt_failed`, `prompt_timeout`, or `ended with error`.
     - Worker crash: `Agent task exited ... reason=...`.
 4. Validate scope:
     - Check whether failures are isolated to one issue/session or repeating across
@@ -99,10 +98,10 @@ For one specific session investigation, keep the trace narrow:
 
 1. Capture one `session_id` for the ticket.
 2. Build a timestamped slice for only that session:
-    - `rg -n "session_id=<thread>-<turn>" log/symphony.log*`
+    - `rg -n "session_id=<session>-<prompt>" log/symphony.log*`
 3. Mark the exact failing stage:
     - Startup failure before stream events (`Codex session failed ...`).
-    - Turn/runtime failure after stream events (`turn_*` / `ended with error`).
+    - Prompt failure after stream events (`prompt_failed` / `ended with error`).
     - Stall recovery (`Issue stalled ... restarting with backoff`).
 4. Pair findings with `issue_identifier` and `issue_id` from nearby lines to
    confirm you are not mixing concurrent retries.

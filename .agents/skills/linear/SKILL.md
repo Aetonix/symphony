@@ -7,12 +7,12 @@ description: |
 
 # Linear GraphQL
 
-Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
+Use this skill for raw Linear GraphQL work during a Symphony ACP session.
 
 ## Primary tool
 
-Use the `linear_graphql` client tool exposed by Symphony's app-server session.
-It reuses Symphony's configured Linear auth for the session.
+Use the `linear_graphql` tool Symphony exposes on the session. Symphony runs the call and returns
+the result. The Linear API key stays in Symphony.
 
 Tool input:
 

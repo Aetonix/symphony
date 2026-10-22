@@ -117,7 +117,7 @@ defmodule SymphonyElixir.GitHub.AgentTool do
   end
 
   defp encode_payload(payload) do
-    case Jason.encode(payload, pretty: true) do
+    case Jason.encode(SymphonyElixir.JSON.sanitize(payload), pretty: true) do
       {:ok, output} -> output
       {:error, _reason} -> inspect(payload)
     end
