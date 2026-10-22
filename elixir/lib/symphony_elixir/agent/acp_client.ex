@@ -36,6 +36,7 @@ defmodule SymphonyElixir.Agent.AcpClient do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, init} <- request(port, "initialize", initialize_params(), @prompt_timeout_ms),
+           :ok <- require_http_mcp(init),
            :ok <- maybe_authenticate(port, agent.implementer, init),
            {:ok, created} <- request(port, "session/new", %{"cwd" => workspace, "mcpServers" => mcp_servers}, @prompt_timeout_ms),
            {:ok, session_id} <- session_id(created) do
@@ -120,6 +121,9 @@ defmodule SymphonyElixir.Agent.AcpClient do
   defp session_id(%{"sessionId" => session_id}) when is_binary(session_id), do: {:ok, session_id}
   defp session_id(result), do: {:error, {:invalid_session, result}}
 
+  defp require_http_mcp(%{"agentCapabilities" => %{"mcpCapabilities" => %{"http" => true}}}), do: :ok
+  defp require_http_mcp(_init), do: {:error, :agent_http_mcp_required}
+
   defp tool_servers do
     binding =
       try do
@@ -128,37 +132,21 @@ defmodule SymphonyElixir.Agent.AcpClient do
         _error -> %{tool_specs: [], secret_environment_names: []}
       end
 
-    proxy = System.find_executable("python3")
-    script = proxy_script()
-
     with :ok <- ToolBroker.ensure_started(),
-         {:ok, token, port} <- ToolBroker.register(binding),
-         true <- is_binary(proxy) and is_binary(script) and File.regular?(script) do
-      {:ok, binding,
-       [
-         %{
-           "name" => "symphony",
-           "command" => proxy,
-           "args" => [script],
-           "env" => [
-             %{"name" => "SYMPHONY_TOOL_PORT", "value" => Integer.to_string(port)},
-             %{"name" => "SYMPHONY_TOOL_TOKEN", "value" => token}
-           ]
-         }
-       ]}
-    else
-      _ -> {:ok, binding, []}
+         {:ok, token, port} <- ToolBroker.register(binding) do
+      {:ok, binding, [http_mcp_server(port, token)]}
     end
   end
 
-  defp proxy_script do
-    path = Application.app_dir(:symphony_elixir, "priv/agent_tool_proxy.py")
-
-    cond do
-      File.regular?(path) -> path
-      File.regular?(Path.expand("priv/agent_tool_proxy.py")) -> Path.expand("priv/agent_tool_proxy.py")
-      true -> nil
-    end
+  defp http_mcp_server(port, token) do
+    %{
+      "type" => "http",
+      "name" => "symphony",
+      "url" => "http://127.0.0.1:#{port}/mcp",
+      "headers" => [
+        %{"name" => "Authorization", "value" => "Bearer " <> token}
+      ]
+    }
   end
 
   defp open_port(workspace, nil, command, binding) do

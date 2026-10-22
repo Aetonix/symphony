@@ -1598,7 +1598,7 @@ defmodule SymphonyElixir.CoreTest do
         count=$((count + 1))
         case "$count" in
           1)
-            printf '%s\\n' '{\"id\":1,\"result\":{}}'
+            printf '%s\\n' '{\"id\":1,\"result\":{\"agentCapabilities\":{\"mcpCapabilities\":{\"http\":true}}}}'
             ;;
           2)
             printf '%s\\n' '{\"id\":2,\"result\":{\"sessionId\":\"thread-1\"}}'
@@ -1680,7 +1680,7 @@ defmodule SymphonyElixir.CoreTest do
           count=$((count + 1))
           case "$count" in
             1)
-              printf '%s\\n' '{\"id\":1,\"result\":{}}'
+              printf '%s\\n' '{\"id\":1,\"result\":{\"agentCapabilities\":{\"mcpCapabilities\":{\"http\":true}}}}'
               ;;
             2)
               printf '%s\\n' '{\"id\":2,\"result\":{\"sessionId\":\"thread-live\"}}'
@@ -1840,7 +1840,7 @@ defmodule SymphonyElixir.CoreTest do
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
         case "$count" in
           1)
-            printf '%s\\n' '{"id":1,"result":{}}'
+            printf '%s\\n' '{"id":1,"result":{"agentCapabilities":{"mcpCapabilities":{"http":true}}}}'
             ;;
           2)
             printf '%s\\n' '{"id":2,"result":{"sessionId":"thread-cont"}}'
@@ -1967,7 +1967,7 @@ defmodule SymphonyElixir.CoreTest do
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
         case "$count" in
           1)
-            printf '%s\\n' '{"id":1,"result":{}}'
+            printf '%s\\n' '{"id":1,"result":{"agentCapabilities":{"mcpCapabilities":{"http":true}}}}'
             ;;
           2)
             printf '%s\\n' '{"id":2,"result":{"sessionId":"thread-max"}}'
@@ -2296,7 +2296,7 @@ defmodule SymphonyElixir.CoreTest do
 
         case "$count" in
           1)
-            printf '%s\\n' '{"id":1,"result":{}}'
+            printf '%s\\n' '{"id":1,"result":{"agentCapabilities":{"mcpCapabilities":{"http":true}}}}'
             ;;
           2)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-99"}}}'

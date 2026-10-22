@@ -27,6 +27,12 @@ Symphony runs the selected tracker adapter's tools and returns the results. The 
 host-side auth and removes declared tracker-token environment variables from the agent process,
 so the agent can request any operation the key allows and cannot read the key.
 
+Those tools reach the agent as an HTTP MCP server that Symphony serves on `127.0.0.1`. The agent
+must advertise `mcpCapabilities.http` during `initialize`, or Symphony does not start the session.
+Because the server binds to the Symphony host's loopback address, the agent has to run on that same
+machine. Remote `worker.ssh_hosts` cannot reach it, so SSH workers do not get tracker tools in this
+build.
+
 The `codex:` workflow block is not a runtime in this build. It returns when a Codex ACP implementer
 is registered. `elixir/docs/token_accounting.md` documents that retired app-server protocol.
 

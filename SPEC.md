@@ -997,6 +997,8 @@ Protocol source of truth:
   selection, prompt construction, continuation handling, and observability extraction.
 - Tracker tools run in Symphony. The agent receives tool results. It does not receive the tracker
   credential.
+- An agent MUST advertise `agentCapabilities.mcpCapabilities.http`. Symphony passes tracker tools
+  as an HTTP MCP server on `session/new`. An agent that does not advertise HTTP MCP is not started.
 
 ### 10.1 Launch Contract
 
@@ -1113,8 +1115,9 @@ Unsupported dynamic tool calls:
 Optional provider-native agent tool extension:
 
 - An adapter MAY expose provider-native tools to the ACP session.
-- The selected adapter's tool specs SHOULD be advertised during `session/new` through the tool
-  server Symphony hosts. The tracker credential stays in Symphony.
+- The selected adapter's tool specs SHOULD be advertised during `session/new` as an HTTP MCP
+  server served by Symphony. The tracker credential stays in Symphony. The agent must advertise
+  HTTP MCP support.
 - Tool specs, adapter selection, and effective tracker settings MUST be bound to one session
   snapshot. A workflow reload applies to future sessions; it MUST NOT make an in-flight session
   advertise one provider and execute another.

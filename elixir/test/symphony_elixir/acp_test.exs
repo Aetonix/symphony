@@ -47,31 +47,12 @@ defmodule SymphonyElixir.AcpTest do
     assert :ok = ToolBroker.ensure_started()
     assert {:ok, token, port} = ToolBroker.register(binding)
 
-    {:ok, socket} =
-      :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :line, active: false])
-
-    request =
-      JSON.encode!(%{
-        "token" => token,
-        "message" => %{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"}
-      })
-
-    :ok = :gen_tcp.send(socket, request <> "\n")
-    assert {:ok, line} = :gen_tcp.recv(socket, 0, 2_000)
-    assert {:ok, %{"result" => %{"tools" => tools}}} = Jason.decode(line)
+    assert {:ok, %{"result" => %{"tools" => tools}}} = post_mcp(port, token, %{"jsonrpc" => "2.0", "id" => 1, "method" => "tools/list"})
     assert Enum.any?(tools, &(&1["name"] == "linear_graphql"))
-    refute line =~ "LINEAR_API_KEY"
 
-    unknown =
-      JSON.encode!(%{
-        "token" => "nope",
-        "message" => %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list"}
-      })
-
-    :ok = :gen_tcp.send(socket, unknown <> "\n")
-    assert {:ok, denied} = :gen_tcp.recv(socket, 0, 2_000)
+    assert {:ok, 401, denied} = post_mcp_raw(port, "nope", %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list"})
     assert denied =~ "unknown tool session"
-    :gen_tcp.close(socket)
+    refute denied =~ "LINEAR_API_KEY"
   end
 
   test "acp client opens a session and runs one prompt" do
@@ -92,7 +73,7 @@ defmodule SymphonyElixir.AcpTest do
         printf '%s\\n' "$line" >> "$trace_file"
         case "$count" in
           1)
-            printf '%s\\n' '{"id":1,"result":{}}'
+            printf '%s\\n' '{"id":1,"result":{"agentCapabilities":{"mcpCapabilities":{"http":true}}}}'
             ;;
           2)
             printf '%s\\n' '{"id":2,"result":{"sessionId":"sess-1"}}'
@@ -133,10 +114,74 @@ defmodule SymphonyElixir.AcpTest do
 
       trace_body = File.read!(trace)
       assert trace_body =~ "\"method\":\"session/new\""
+      assert trace_body =~ "\"type\":\"http\""
+      assert trace_body =~ "/mcp"
       assert trace_body =~ "\"method\":\"session/prompt\""
       refute trace_body =~ "LINEAR_API_KEY"
+      refute trace_body =~ "agent_tool_proxy"
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  test "acp client rejects an agent without http mcp" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-nohttp-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(test_root)
+      fake = Path.join(test_root, "fake-agent")
+
+      File.write!(fake, """
+      #!/bin/sh
+      while IFS= read -r line; do
+        printf '%s\\n' '{"id":1,"result":{"agentCapabilities":{"mcpCapabilities":{"http":false}}}}'
+        exit 0
+      done
+      """)
+
+      File.chmod!(fake, 0o755)
+      write_workflow_file!(Workflow.workflow_file_path(), codex_command: fake)
+
+      assert {:error, :agent_http_mcp_required} = AcpClient.start_session(test_root, issue: %{labels: []})
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp post_mcp(port, token, message) do
+    {:ok, 200, body} = post_mcp_raw(port, token, message)
+    Jason.decode(body)
+  end
+
+  defp post_mcp_raw(port, token, message) do
+    body = JSON.encode!(message)
+
+    request = [
+      "POST /mcp HTTP/1.1\r\n",
+      "Host: 127.0.0.1\r\n",
+      "Authorization: Bearer #{token}\r\n",
+      "Content-Type: application/json\r\n",
+      "Content-Length: #{byte_size(body)}\r\n",
+      "Connection: close\r\n",
+      "\r\n",
+      body
+    ]
+
+    {:ok, socket} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, request)
+    {:ok, response} = recv_all(socket, "")
+    :gen_tcp.close(socket)
+    [head, resp_body] = String.split(response, "\r\n\r\n", parts: 2)
+    ["HTTP/1.1 " <> status | _] = String.split(head, "\r\n")
+    {code, _} = Integer.parse(status)
+    {:ok, code, resp_body}
+  end
+
+  defp recv_all(socket, buffer) do
+    case :gen_tcp.recv(socket, 0, 2_000) do
+      {:ok, data} -> recv_all(socket, buffer <> data)
+      {:error, :closed} -> {:ok, buffer}
+      other -> other
     end
   end
 end

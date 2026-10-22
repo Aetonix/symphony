@@ -32,7 +32,7 @@ defmodule SymphonyElixir.Agent.ToolBroker do
 
   @impl true
   def init(_opts) do
-    case :gen_tcp.listen(0, [:binary, packet: :line, active: false, ip: {127, 0, 0, 1}]) do
+    case :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}]) do
       {:ok, listen} ->
         {:ok, port} = :inet.port(listen)
         parent = self()
@@ -50,14 +50,9 @@ defmodule SymphonyElixir.Agent.ToolBroker do
     {:reply, {:ok, token, state.port}, %{state | sessions: Map.put(state.sessions, token, binding)}}
   end
 
-  def handle_call({:dispatch, token, message}, _from, state) do
-    {:reply, dispatch(token, message, state.sessions), state}
-  end
-
   @impl true
-  def handle_info({:tcp_request, token, message, from}, state) do
-    response = dispatch(token, message, state.sessions)
-    send(from, {:tcp_response, response})
+  def handle_info({:http_request, token, message, from}, state) do
+    send(from, {:http_response, dispatch(token, message, state.sessions)})
     {:noreply, state}
   end
 
@@ -76,29 +71,140 @@ defmodule SymphonyElixir.Agent.ToolBroker do
   end
 
   defp serve(socket, parent) do
-    case :gen_tcp.recv(socket, 0) do
-      {:ok, line} ->
-        response =
-          case JSON.sanitize(line) |> Jason.decode() do
-            {:ok, %{"token" => token, "message" => message}} ->
-              send(parent, {:tcp_request, token, message, self()})
+    case read_request(socket) do
+      {:ok, request} ->
+        :gen_tcp.send(socket, answer(request, parent))
+        :gen_tcp.close(socket)
 
-              receive do
-                {:tcp_response, payload} -> payload
-              after
-                30_000 -> %{"error" => "tool broker timeout"}
-              end
-
-            _ ->
-              %{"error" => "invalid tool broker request"}
-          end
-
-        :gen_tcp.send(socket, [JSON.encode!(response), ?\n])
-        serve(socket, parent)
-
-      {:error, _reason} ->
+      :closed ->
         :gen_tcp.close(socket)
     end
+  end
+
+  defp answer(%{method: "POST", path: "/mcp", headers: headers, body: body}, parent) do
+    case JSON.sanitize(body) |> Jason.decode() do
+      {:ok, message} ->
+        token = bearer(headers)
+        send(parent, {:http_request, token, message, self()})
+
+        response =
+          receive do
+            {:http_response, payload} -> payload
+          after
+            30_000 -> %{"jsonrpc" => "2.0", "id" => nil, "error" => %{"code" => -32_000, "message" => "tool broker timeout"}}
+          end
+
+        http_response(status_for(response), JSON.encode!(response))
+
+      {:error, _reason} ->
+        http_response(400, JSON.encode!(%{"error" => "invalid json"}))
+    end
+  end
+
+  defp answer(%{method: "POST"}, _parent), do: http_response(404, JSON.encode!(%{"error" => "not found"}))
+  defp answer(_request, _parent), do: http_response(405, JSON.encode!(%{"error" => "method not allowed"}))
+
+  defp status_for(%{"error" => %{"code" => -32_001}}), do: 401
+  defp status_for(_response), do: 200
+
+  defp bearer(headers) do
+    case Map.get(headers, "authorization", "") do
+      "Bearer " <> token -> token
+      "bearer " <> token -> token
+      _ -> nil
+    end
+  end
+
+  defp read_request(socket) do
+    with {:ok, buffer} <- read_until(socket, "", "\r\n\r\n"),
+         {:ok, request, rest} <- split_headers(buffer),
+         {:ok, body} <- read_body(socket, rest, request.content_length) do
+      {:ok, %{request | body: body}}
+    else
+      _ -> :closed
+    end
+  end
+
+  defp split_headers(buffer) do
+    case String.split(buffer, "\r\n\r\n", parts: 2) do
+      [head, rest] -> request_from_head(head, rest)
+      _ -> :error
+    end
+  end
+
+  defp request_from_head(head, rest) do
+    case String.split(head, "\r\n") do
+      [request_line | header_lines] -> request_from_line(request_line, header_lines, rest)
+      _ -> :error
+    end
+  end
+
+  defp request_from_line(request_line, header_lines, rest) do
+    case String.split(request_line, " ") do
+      [method, path | _] ->
+        headers = header_map(header_lines)
+
+        {:ok,
+         %{
+           method: method,
+           path: path,
+           headers: headers,
+           content_length: content_length(headers),
+           body: ""
+         }, rest}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp header_map(lines) do
+    Enum.reduce(lines, %{}, fn line, acc ->
+      case String.split(line, ":", parts: 2) do
+        [name, value] -> Map.put(acc, String.downcase(name), String.trim(value))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp content_length(headers) do
+    case Integer.parse(Map.get(headers, "content-length", "0")) do
+      {length, _} when length >= 0 -> length
+      _ -> 0
+    end
+  end
+
+  defp read_body(_socket, rest, length) when byte_size(rest) >= length, do: {:ok, binary_part(rest, 0, length)}
+
+  defp read_body(socket, rest, length) do
+    case :gen_tcp.recv(socket, length - byte_size(rest), 15_000) do
+      {:ok, data} -> {:ok, rest <> data}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp read_until(socket, buffer, marker) do
+    if String.contains?(buffer, marker) do
+      {:ok, buffer}
+    else
+      case :gen_tcp.recv(socket, 0, 15_000) do
+        {:ok, data} -> read_until(socket, buffer <> data, marker)
+        {:error, _reason} -> :error
+      end
+    end
+  end
+
+  defp http_response(status, body) do
+    reason = %{200 => "OK", 400 => "Bad Request", 401 => "Unauthorized", 404 => "Not Found", 405 => "Method Not Allowed"}
+
+    [
+      "HTTP/1.1 #{status} #{reason[status]}\r\n",
+      "Content-Type: application/json\r\n",
+      "Content-Length: #{byte_size(body)}\r\n",
+      "Connection: close\r\n",
+      "\r\n",
+      body
+    ]
   end
 
   defp dispatch(token, message, sessions) do
