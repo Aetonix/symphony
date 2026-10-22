@@ -262,6 +262,16 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
+    config = Config.settings!()
+
+    if config.paused or config.agent.max_concurrent_agents == 0 do
+      state
+    else
+      dispatch_candidate_issues(state)
+    end
+  end
+
+  defp dispatch_candidate_issues(%State{} = state) do
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do

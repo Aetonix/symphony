@@ -50,6 +50,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
+      field(:oauth_read_only, :boolean, default: false)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -59,7 +60,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :assignee, :oauth_read_only, :active_states, :terminal_states],
         empty_values: []
       )
     end
@@ -142,7 +143,7 @@ defmodule SymphonyElixir.Config.Schema do
         [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
         empty_values: []
       )
-      |> validate_number(:max_concurrent_agents, greater_than: 0)
+      |> validate_number(:max_concurrent_agents, greater_than_or_equal_to: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
@@ -261,6 +262,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(attrs, [:port, :host], empty_values: [])
       |> validate_number(:port, greater_than_or_equal_to: 0)
+      |> validate_inclusion(:host, ["127.0.0.1", "localhost"])
     end
   end
 
@@ -294,6 +296,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     field(:agents, :map, default: %{})
     embeds_one(:routing, Routing, on_replace: :update, defaults_to_struct: true)
+    field(:paused, :boolean, default: false)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -376,7 +379,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [:agents])
+    |> cast(attrs, [:agents, :paused])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
